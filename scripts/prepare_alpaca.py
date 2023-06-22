@@ -2,6 +2,7 @@
 import json
 import sys
 from pathlib import Path
+import multiprocessing as mp
 
 import requests
 import torch
@@ -22,6 +23,7 @@ TEST_SPLIT_SIZE = 2000
 IGNORE_INDEX = -1
 MASK_INPUTS = False  # as in alpaca-lora
 SEED = 42
+N_JOBS = 8
 
 
 def prepare(
@@ -64,16 +66,14 @@ def prepare(
     print(f"val has {len(test_set):,} samples")
 
     print("Processing train split ...")
-    train_set = [
-        prepare_sample(
-            example=sample,
+    train_set = process_samples_mp(
+            samples=train_set,
             tokenizer=tokenizer,
             max_length=max_seq_length,
             mask_inputs=mask_inputs,
             ignore_index=ignore_index,
-        )
-        for sample in tqdm(train_set)
-    ]
+            n_jobs=N_JOBS,
+            )
     torch.save(train_set, destination_path / "train.pt")
 
     print("Processing test split ...")
@@ -96,6 +96,38 @@ def download_if_missing(file_path: Path, file_url: str):
         return
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(requests.get(file_url).text)
+
+
+def process_samples(samples, tokenizer, max_seq_length, mask_inputs, ignore_index):
+    results = [
+    prepare_sample(
+        example=sample,
+        tokenizer=tokenizer,
+        max_length=max_seq_length,
+        mask_inputs=mask_inputs,
+        ignore_index=ignore_index,
+    )
+    for sample in tqdm(samples)
+    ]
+    return results
+    
+
+def process_samples_mp(samples, tokenizer, max_length, mask_inputs, ignore_index, n_jobs=2):
+    async_results = list()
+    with mp.Pool(n_jobs) as pool:
+        for samples_chunk in np.array_split(samples, num_jobs):
+            async_results.append(pool.apply_async(process_samples, kwds={
+                'samples': samples_chunk,
+                'tokenizer': tokenizer,
+                'max_seq_length': max_length,
+                'ignore_index': ignore_index,
+                'mask_inputs': mask_inputs,
+                }))
+        results = list()
+        for async_res in async_results:
+            results.extend(async_res.get())
+    return results
+
 
 
 def prepare_sample(
